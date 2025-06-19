@@ -10,6 +10,11 @@
 - [x] CLI interface with multiple output formats
 - [x] Build system (Makefile) with comprehensive targets
 - [x] Documentation (README.md, SETUP.md)
+- [x] **NEW: Fixed all build warnings and enhanced debugging**
+- [x] **NEW: Visual Studio Code detection support**
+- [x] **NEW: Enhanced JetBrains detection with .idea/ workspace parsing**
+- [x] **NEW: System installation support (/usr/local/bin/)**
+- [x] **NEW: Shell auto-completion for bash and zsh**
 
 ## Phase 2: Windows & macOS Support 🚧 IN PROGRESS
 - [ ] Complete Windows process detection implementation
