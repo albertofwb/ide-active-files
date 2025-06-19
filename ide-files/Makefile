@@ -104,11 +104,20 @@ fix: ## Auto-fix code issues
 
 # Install targets
 .PHONY: install
-install: release ## Install to /usr/local/bin (requires sudo)
+install: release ## Install to /usr/local/bin with 'idf' alias and auto-completion (requires sudo)
 	@echo "Installing $(PROJECT_NAME) to /usr/local/bin/..."
 	sudo install -m 755 $(RELEASE_BIN) /usr/local/bin/$(PROJECT_NAME)
+	@echo "Creating 'idf' alias..."
+	sudo ln -sf $(PROJECT_NAME) /usr/local/bin/idf
+	@echo "Setting up shell auto-completion..."
+	@if [ -f ./scripts/setup-completion.sh ]; then \
+		chmod +x ./scripts/setup-completion.sh && ./scripts/setup-completion.sh; \
+	else \
+		echo "Warning: completion setup script not found"; \
+	fi
 	@echo "$(PROJECT_NAME) installed successfully!"
-	@echo "Run 'make install-completion' to set up shell auto-completion"
+	@echo "Available commands: $(PROJECT_NAME) or idf"
+	@echo "Auto-completion is set up for both commands"
 
 .PHONY: install-completion
 install-completion: ## Install shell auto-completion
@@ -126,9 +135,10 @@ completion-script: ## Generate completion setup script
 
 .PHONY: uninstall
 uninstall: ## Uninstall from system
-	@echo "Uninstalling $(PROJECT_NAME)..."
+	@echo "Uninstalling $(PROJECT_NAME) and idf alias..."
 	sudo rm -f /usr/local/bin/$(PROJECT_NAME)
-	@echo "$(PROJECT_NAME) uninstalled successfully!"
+	sudo rm -f /usr/local/bin/idf
+	@echo "$(PROJECT_NAME) and idf uninstalled successfully!"
 
 .PHONY: install-deps
 install-deps: ## Install system dependencies
@@ -185,9 +195,13 @@ examples: build ## Show usage examples
 	@echo "   ./$(DEBUG_BIN) --debug-processes"
 	@echo ""
 	@echo "Installation commands:"
-	@echo "   make install              # Install to /usr/local/bin/ (requires sudo)"
-	@echo "   make install-completion   # Set up shell auto-completion"
+	@echo "   make install              # Install to /usr/local/bin/ with 'idf' alias (requires sudo)"
+	@echo "   make install-completion   # Set up shell auto-completion for both commands"
 	@echo "   make uninstall            # Remove from system"
+	@echo ""
+	@echo "After installation, use either command:"
+	@echo "   ide-files --auto          # Full command name"
+	@echo "   idf --auto                # Short alias (recommended)"
 
 # Debug targets
 .PHONY: debug-processes

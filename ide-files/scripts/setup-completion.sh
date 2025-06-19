@@ -35,10 +35,12 @@ echo "Using completion directory: $COMPLETION_DIR"
 
 # Generate completion script
 echo "Generating completion script..."
-cat > "$COMPLETION_DIR/_ide-files" << 'COMPLETION_EOF'
-#compdef ide-files
+if [ -n "$ZSH_VERSION" ] || [ "$SHELL" = "/bin/zsh" ] || [ "$SHELL" = "/usr/bin/zsh" ]; then
+    # ZSH completion file
+    cat > "$COMPLETION_DIR/_ide-files" << 'COMPLETION_EOF'
+#compdef ide-files idf
 
-# ZSH completion for ide-files
+# ZSH completion for ide-files and idf
 _ide-files() {
     local context state line
     typeset -A opt_args
@@ -56,7 +58,15 @@ _ide-files() {
         '(-V --version)'{-V,--version}'[Show version]'
 }
 
-# BASH completion for ide-files  
+_ide-files "$@"
+COMPLETION_EOF
+    
+    # Create symlink for idf
+    ln -sf _ide-files "$COMPLETION_DIR/_idf"
+else
+    # BASH completion file
+    cat > "$COMPLETION_DIR/_ide-files" << 'COMPLETION_EOF'
+# BASH completion for ide-files and idf
 _ide_files_completion() {
     local cur prev opts
     COMPREPLY=()
@@ -75,7 +85,6 @@ _ide_files_completion() {
             return 0
             ;;
         --debug-process)
-            # Could complete with running process names, but keep simple for now
             return 0
             ;;
     esac
@@ -86,13 +95,10 @@ _ide_files_completion() {
     fi
 }
 
-# Register completion function
-if [ -n "$ZSH_VERSION" ]; then
-    compdef _ide-files ide-files
-elif [ -n "$BASH_VERSION" ]; then
-    complete -F _ide_files_completion ide-files
-fi
+complete -F _ide_files_completion ide-files
+complete -F _ide_files_completion idf
 COMPLETION_EOF
+fi
 
 # Set up shell integration
 if [ -n "$ZSH_VERSION" ] || [ "$SHELL" = "/bin/zsh" ] || [ "$SHELL" = "/usr/bin/zsh" ]; then
@@ -126,9 +132,9 @@ fi
 
 echo ""
 echo "✅ Completion setup complete!"
-echo "Test it by typing: ide-files --<TAB>"
+echo "Test it by typing: ide-files --<TAB> or idf --<TAB>"
 echo ""
 echo "Available commands with completion:"
 echo "  ide-files --ide <TAB>        # Show available IDEs"
-echo "  ide-files --format <TAB>     # Show output formats"
-echo "  ide-files --<TAB>            # Show all options"
+echo "  idf --format <TAB>           # Show output formats (shorter alias)"
+echo "  idf --<TAB>                  # Show all options"

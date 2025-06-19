@@ -29,20 +29,25 @@ A Rust command-line tool that detects currently open files in various IDEs and e
 ## Quick Start
 
 ```bash
+# After installation, use the short 'idf' command:
+
 # List all supported IDEs
-./ide-files --list-ides
+idf --list-ides
 
 # Auto-detect any running IDE
-./ide-files --auto --verbose
+idf --auto --verbose
 
 # Check specific IDE
-./ide-files --ide=vim --format=json
+idf --ide=vim --format=json
 
 # Get only file paths
-./ide-files --auto --format=paths
+idf --auto --format=paths
 
 # Get only the active file
-./ide-files --auto --active
+idf --auto --active
+
+# Or use the full name
+ide-files --auto
 ```
 
 ## Installation
@@ -65,9 +70,12 @@ make install
 # Set up shell auto-completion (bash/zsh)
 make install-completion
 
-# Test installation
-ide-files --help
-ide-files --list-ides
+# Test installation (use either command)
+ide-files --help          # Full name
+idf --help                # Short alias
+
+# List supported IDEs
+idf --list-ides
 ```
 
 ## Usage
@@ -76,18 +84,18 @@ ide-files --list-ides
 
 ```bash
 # Show help
-./ide-files --help
+idf --help
 
 # List supported IDEs
-./ide-files --list-ides
+idf --list-ides
 
 # Auto-detect running IDEs
-./ide-files --auto
+idf --auto
 
 # Detect specific IDE
-./ide-files --ide=goland
-./ide-files --ide=vim
-./ide-files --ide=vscode
+idf --ide=goland
+idf --ide=vim
+idf --ide=vscode
 ```
 
 ### Output Formats
