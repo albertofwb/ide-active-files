@@ -104,9 +104,31 @@ fix: ## Auto-fix code issues
 
 # Install targets
 .PHONY: install
-install: release ## Install to system
-	@echo "Installing $(PROJECT_NAME)..."
-	cargo install --path .
+install: release ## Install to /usr/local/bin (requires sudo)
+	@echo "Installing $(PROJECT_NAME) to /usr/local/bin/..."
+	sudo install -m 755 $(RELEASE_BIN) /usr/local/bin/$(PROJECT_NAME)
+	@echo "$(PROJECT_NAME) installed successfully!"
+	@echo "Run 'make install-completion' to set up shell auto-completion"
+
+.PHONY: install-completion
+install-completion: ## Install shell auto-completion
+	@echo "Setting up shell auto-completion..."
+	@if [ -f ./scripts/setup-completion.sh ]; then \
+		chmod +x ./scripts/setup-completion.sh && ./scripts/setup-completion.sh; \
+	else \
+		echo "Error: completion setup script not found. Run 'make completion-script' first."; \
+	fi
+
+.PHONY: completion-script
+completion-script: ## Generate completion setup script
+	@echo "Completion setup script already created at scripts/setup-completion.sh"
+	@echo "Run 'make install-completion' to install auto-completion"
+
+.PHONY: uninstall
+uninstall: ## Uninstall from system
+	@echo "Uninstalling $(PROJECT_NAME)..."
+	sudo rm -f /usr/local/bin/$(PROJECT_NAME)
+	@echo "$(PROJECT_NAME) uninstalled successfully!"
 
 .PHONY: install-deps
 install-deps: ## Install system dependencies
@@ -161,6 +183,11 @@ examples: build ## Show usage examples
 	@echo ""
 	@echo "6. Debug mode (list all processes):"
 	@echo "   ./$(DEBUG_BIN) --debug-processes"
+	@echo ""
+	@echo "Installation commands:"
+	@echo "   make install              # Install to /usr/local/bin/ (requires sudo)"
+	@echo "   make install-completion   # Set up shell auto-completion"
+	@echo "   make uninstall            # Remove from system"
 
 # Debug targets
 .PHONY: debug-processes

@@ -59,8 +59,15 @@ git clone <repository-url>
 cd ide-files
 make build
 
-# Or install system-wide
+# Install system-wide to /usr/local/bin/ (requires sudo)
 make install
+
+# Set up shell auto-completion (bash/zsh)
+make install-completion
+
+# Test installation
+ide-files --help
+ide-files --list-ides
 ```
 
 ## Usage
