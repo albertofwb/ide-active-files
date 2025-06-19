@@ -59,6 +59,12 @@ fn main() {
                 .action(clap::ArgAction::SetTrue)
                 .help("List all running processes (debug mode)"),
         )
+        .arg(
+            Arg::new("debug-process")
+                .long("debug-process")
+                .value_name("NAME")
+                .help("List processes matching specific name"),
+        )
         .get_matches();
 
     // Initialize detector manager
@@ -87,11 +93,31 @@ fn main() {
         return;
     }
 
+    // Handle debug specific process
+    if let Some(process_name) = matches.get_one::<String>("debug-process") {
+        match crate::process::find_processes_by_name(process_name) {
+            Ok(processes) => {
+                println!("Processes matching '{}':", process_name);
+                for process in processes {
+                    println!("PID: {}, Name: {}, Executable: {}, Title: {}", 
+                        process.pid, 
+                        process.name, 
+                        if process.executable_path.is_empty() { "<unknown>" } else { &process.executable_path },
+                        if process.window_title.is_empty() { "<no title>" } else { &process.window_title });
+                }
+            }
+            Err(e) => eprintln!("Error finding processes: {}", e),
+        }
+        return;
+    }
+
     // Handle list IDEs command
     if matches.get_flag("list-ides") {
         println!("Supported IDEs:");
-        for ide in SupportedIDE::all() {
-            println!("  {} (--ide={})", ide.display_name(), ide.as_str());
+        let supported_ides = manager.list_supported_ides();
+        for (i, ide_name) in supported_ides.iter().enumerate() {
+            let ide_type = SupportedIDE::all()[i];
+            println!("  {} (--ide={})", ide_name, ide_type.as_str());
         }
         return;
     }
