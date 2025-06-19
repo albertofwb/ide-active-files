@@ -7,6 +7,7 @@ use clap::{Arg, Command};
 use detector::IDEDetectorManager;
 use detectors::jetbrains::JetBrainsDetector;
 use detectors::terminal::TerminalEditorDetector;
+use detectors::vscode::VSCodeDetector;
 use std::process::exit;
 use types::SupportedIDE;
 
@@ -83,6 +84,9 @@ fn main() {
     manager.register_detector(Box::new(TerminalEditorDetector::new(SupportedIDE::Vim)));
     manager.register_detector(Box::new(TerminalEditorDetector::new(SupportedIDE::Nano)));
 
+    // Register VSCode detector
+    manager.register_detector(Box::new(VSCodeDetector::new()));
+
     let verbose = matches.get_flag("verbose");
 
     // Handle debug processes
@@ -114,10 +118,8 @@ fn main() {
     // Handle list IDEs command
     if matches.get_flag("list-ides") {
         println!("Supported IDEs:");
-        let supported_ides = manager.list_supported_ides();
-        for (i, ide_name) in supported_ides.iter().enumerate() {
-            let ide_type = SupportedIDE::all()[i];
-            println!("  {} (--ide={})", ide_name, ide_type.as_str());
+        for ide in SupportedIDE::all() {
+            println!("  {} (--ide={})", ide.display_name(), ide.as_str());
         }
         return;
     }
