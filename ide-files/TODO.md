@@ -15,6 +15,9 @@
 - [x] **NEW: Enhanced JetBrains detection with .idea/ workspace parsing**
 - [x] **NEW: System installation support (/usr/local/bin/)**
 - [x] **NEW: Shell auto-completion for bash and zsh**
+- [x] **NEW: 'idf' alias for shorter command usage**
+- [x] **NEW: Integrated installation with auto-completion setup**
+- [x] **NEW: Comprehensive Linux installation test script**
 
 ## Phase 2: Windows & macOS Support 🚧 IN PROGRESS
 - [ ] Complete Windows process detection implementation
@@ -110,11 +113,21 @@
 
 ## Platform-Specific Tasks
 
-### Linux 🐧
-- [ ] Support for Wayland sessions
-- [ ] Snap/Flatpak application detection
-- [ ] AppImage application detection
-- [ ] SELinux compatibility testing
+### Linux 🐧 (Command Line Environment)
+- [ ] **Enhanced Terminal Editor Support**
+  - [ ] Neovim server/client detection
+  - [ ] Emacs daemon mode detection  
+  - [ ] Screen/tmux session file detection
+  - [ ] SSH session file detection
+- [ ] **Container Environment Support**
+  - [ ] Docker container IDE detection
+  - [ ] VS Code server (remote) detection
+  - [ ] JetBrains Gateway detection
+- [ ] **Package Manager Integration**
+  - [ ] Snap/Flatpak application detection
+  - [ ] AppImage application detection
+  - [ ] Support for Wayland sessions
+  - [ ] SELinux compatibility testing
 
 ### macOS 🍎
 - [ ] Handle System Integrity Protection (SIP)
