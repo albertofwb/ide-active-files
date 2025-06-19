@@ -1,5 +1,5 @@
-use crate::detector::{IDEDetector, DetectionResult};
-use crate::types::{ProcessInfo, SupportedIDE, FileInfo};
+use crate::detector::{DetectionResult, IDEDetector};
+use crate::types::{FileInfo, ProcessInfo, SupportedIDE};
 use regex::Regex;
 
 /// JetBrains IDE base detector
@@ -31,7 +31,7 @@ impl JetBrainsDetector {
         // JetBrains IDE window title formats:
         // "filename.ext - project-name [/path/to/project] - IDE-Name 202X.X"
         // "filename.ext* - project-name [/path/to/project] - IDE-Name 202X.X" (modified)
-        
+
         let patterns = [
             r"^([^-]+?)\s*(\*)?\s*-\s*([^[]+?)\s*\[([^\]]+)\]\s*-\s*\w+\s+[\d.]+",
             r"^([^-]+?)\s*(\*)?\s*-\s*([^-]+?)\s*-\s*\w+\s+[\d.]+",
@@ -75,23 +75,26 @@ impl IDEDetector for JetBrainsDetector {
     }
 
     fn is_target_process(&self, process: &ProcessInfo) -> bool {
-        self.process_names.iter().any(|&name| 
-            process.name.to_lowercase().contains(&name.to_lowercase())
-        )
+        self.process_names
+            .iter()
+            .any(|&name| process.name.to_lowercase().contains(&name.to_lowercase()))
     }
 
-    fn extract_files(&self, processes: &[ProcessInfo]) -> DetectionResult<crate::types::DetectionResult> {
+    fn extract_files(
+        &self,
+        processes: &[ProcessInfo],
+    ) -> DetectionResult<crate::types::DetectionResult> {
         let mut open_files = Vec::new();
         let mut active_file = None;
         let mut project_path = None;
-        let mut ide_version = None;
+        let ide_version = None;
 
         for process in processes {
             if let Some(file_info) = self.parse_jetbrains_window_title(&process.window_title) {
                 if file_info.is_active {
                     active_file = Some(file_info.path.clone());
                 }
-                
+
                 // Try to extract project path from window title
                 if project_path.is_none() && file_info.project_name.is_some() {
                     // This could be further parsed from window title

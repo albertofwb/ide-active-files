@@ -93,7 +93,8 @@ impl SupportedIDE {
     }
 
     pub fn from_str(s: &str) -> Option<SupportedIDE> {
-        SupportedIDE::all().into_iter()
+        SupportedIDE::all()
+            .into_iter()
             .find(|ide| ide.as_str().eq_ignore_ascii_case(s))
     }
 }

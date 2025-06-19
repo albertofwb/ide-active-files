@@ -1,7 +1,5 @@
-use crate::detector::{IDEDetector, DetectionResult};
-use crate::types::{ProcessInfo, SupportedIDE, FileInfo};
-use std::process::Command;
-use std::collections::HashMap;
+use crate::detector::{DetectionResult, IDEDetector};
+use crate::types::{FileInfo, ProcessInfo, SupportedIDE};
 
 /// Terminal editor detector
 pub struct TerminalEditorDetector {
@@ -29,14 +27,13 @@ impl TerminalEditorDetector {
         #[cfg(target_os = "linux")]
         {
             let cmdline_path = format!("/proc/{}/cmdline", pid);
-            std::fs::read_to_string(&cmdline_path)
-                .ok()
-                .map(|content| {
-                    content.split('\0')
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect()
-                })
+            std::fs::read_to_string(&cmdline_path).ok().map(|content| {
+                content
+                    .split('\0')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
         }
 
         #[cfg(target_os = "macos")]
@@ -48,7 +45,13 @@ impl TerminalEditorDetector {
                 .ok()?;
 
             let cmdline = String::from_utf8_lossy(&output.stdout);
-            Some(cmdline.trim().split_whitespace().map(|s| s.to_string()).collect())
+            Some(
+                cmdline
+                    .trim()
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect(),
+            )
         }
     }
 
@@ -58,8 +61,14 @@ impl TerminalEditorDetector {
         // Windows implementation - simplified version
         // Could use WMI or PowerShell for full command line
         let output = Command::new("wmic")
-            .args(&["process", "where", &format!("ProcessId={}", pid), 
-                   "get", "CommandLine", "/value"])
+            .args(&[
+                "process",
+                "where",
+                &format!("ProcessId={}", pid),
+                "get",
+                "CommandLine",
+                "/value",
+            ])
             .output()
             .ok()?;
 
@@ -83,9 +92,10 @@ impl TerminalEditorDetector {
         let file_path = match self.ide_type {
             SupportedIDE::Vim => {
                 // vim format: vim /path/to/file.txt
-                // nvim format: nvim /path/to/file.txt  
+                // nvim format: nvim /path/to/file.txt
                 // May have options: vim -n /path/to/file.txt
-                cmdline.iter()
+                cmdline
+                    .iter()
                     .skip(1) // Skip program name
                     .find(|arg| !arg.starts_with('-') && !arg.is_empty())
                     .cloned()
@@ -93,7 +103,8 @@ impl TerminalEditorDetector {
             SupportedIDE::Nano => {
                 // nano format: nano /path/to/file.txt
                 // May have options: nano -w /path/to/file.txt
-                cmdline.iter()
+                cmdline
+                    .iter()
                     .skip(1) // Skip program name
                     .find(|arg| !arg.starts_with('-') && !arg.is_empty())
                     .cloned()
@@ -121,7 +132,7 @@ impl TerminalEditorDetector {
         Some(FileInfo {
             path: absolute_path,
             name: file_name,
-            is_active: true, // Terminal editors usually edit one file
+            is_active: true,    // Terminal editors usually edit one file
             is_modified: false, // Can't easily detect modification status
             tab_index: Some(0),
             project_name: None,
@@ -146,7 +157,10 @@ impl IDEDetector for TerminalEditorDetector {
         })
     }
 
-    fn extract_files(&self, processes: &[ProcessInfo]) -> DetectionResult<crate::types::DetectionResult> {
+    fn extract_files(
+        &self,
+        processes: &[ProcessInfo],
+    ) -> DetectionResult<crate::types::DetectionResult> {
         let mut open_files = Vec::new();
         let mut active_file = None;
 
