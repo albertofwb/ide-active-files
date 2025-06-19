@@ -1,6 +1,8 @@
 use crate::detector::{DetectionResult, IDEDetector};
 use crate::types::{FileInfo, ProcessInfo, SupportedIDE};
 use regex::Regex;
+use std::fs;
+use std::path::Path;
 
 /// JetBrains IDE base detector
 pub struct JetBrainsDetector {
@@ -27,45 +29,204 @@ impl JetBrainsDetector {
         }
     }
 
-    fn parse_jetbrains_window_title(&self, title: &str) -> Option<FileInfo> {
+    fn parse_jetbrains_window_title(&self, title: &str) -> Option<(FileInfo, Option<String>)> {
         // JetBrains IDE window title formats:
         // "filename.ext - project-name [/path/to/project] - IDE-Name 202X.X"
         // "filename.ext* - project-name [/path/to/project] - IDE-Name 202X.X" (modified)
+        // "project-name - IDE-Name 202X.X" (no file open)
+        // "filename.ext - project-name - IDE-Name 202X.X" (no project path)
 
         let patterns = [
-            r"^([^-]+?)\s*(\*)?\s*-\s*([^[]+?)\s*\[([^\]]+)\]\s*-\s*\w+\s+[\d.]+",
-            r"^([^-]+?)\s*(\*)?\s*-\s*([^-]+?)\s*-\s*\w+\s+[\d.]+",
+            // Full format with project path
+            r"^([^-]+?)\s*(\*)?\s*-\s*([^[]+?)\s*\[([^\]]+)\]\s*-\s*(\w+(?:\s+\w+)*)\s+([\d.]+)",
+            // Format without project path
+            r"^([^-]+?)\s*(\*)?\s*-\s*([^-]+?)\s*-\s*(\w+(?:\s+\w+)*)\s+([\d.]+)",
+            // Project only (no file)
+            r"^([^-]+?)\s*-\s*(\w+(?:\s+\w+)*)\s+([\d.]+)",
         ];
 
-        for pattern in &patterns {
+        for (i, pattern) in patterns.iter().enumerate() {
             if let Ok(regex) = Regex::new(pattern) {
                 if let Some(captures) = regex.captures(title) {
-                    let filename = captures.get(1)?.as_str().trim();
-                    let is_modified = captures.get(2).is_some();
-                    let project_name = captures.get(3)?.as_str().trim();
-                    let project_path = captures.get(4).map(|m| m.as_str().trim());
+                    match i {
+                        0 => {
+                            // Full format with project path
+                            let filename = captures.get(1)?.as_str().trim();
+                            let is_modified = captures.get(2).is_some();
+                            let project_name = captures.get(3)?.as_str().trim();
+                            let project_path = captures.get(4).map(|m| m.as_str().trim().to_string());
+                            
+                            if !filename.is_empty() && !filename.eq_ignore_ascii_case(project_name) {
+                                let full_path = if let Some(ref path) = project_path {
+                                    format!("{}/{}", path.trim_end_matches('/'), filename)
+                                } else {
+                                    filename.to_string()
+                                };
 
-                    if !filename.is_empty() {
-                        let full_path = if let Some(path) = project_path {
-                            format!("{}/{}", path.trim_end_matches('/'), filename)
-                        } else {
-                            filename.to_string()
-                        };
-
-                        return Some(FileInfo {
-                            path: full_path,
-                            name: filename.to_string(),
-                            is_active: true, // Window title shows the active file
-                            is_modified,
-                            tab_index: None,
-                            project_name: Some(project_name.to_string()),
-                        });
+                                return Some((FileInfo {
+                                    path: full_path,
+                                    name: filename.to_string(),
+                                    is_active: true,
+                                    is_modified,
+                                    tab_index: None,
+                                    project_name: Some(project_name.to_string()),
+                                }, project_path));
+                            }
+                        }
+                        1 => {
+                            // Format without project path
+                            let filename = captures.get(1)?.as_str().trim();
+                            let is_modified = captures.get(2).is_some();
+                            let project_name = captures.get(3)?.as_str().trim();
+                            
+                            if !filename.is_empty() && !filename.eq_ignore_ascii_case(project_name) {
+                                return Some((FileInfo {
+                                    path: filename.to_string(),
+                                    name: filename.to_string(),
+                                    is_active: true,
+                                    is_modified,
+                                    tab_index: None,
+                                    project_name: Some(project_name.to_string()),
+                                }, None));
+                            }
+                        }
+                        2 => {
+                            // Project only - no specific file detected
+                            return None;
+                        }
+                        _ => {}
                     }
                 }
             }
         }
 
         None
+    }
+
+    /// Get process command line to find additional information
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn get_process_cmdline(&self, pid: u32) -> Option<Vec<String>> {
+        #[cfg(target_os = "linux")]
+        {
+            let cmdline_path = format!("/proc/{}/cmdline", pid);
+            std::fs::read_to_string(&cmdline_path).ok().map(|content| {
+                content
+                    .split('\0')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let output = std::process::Command::new("ps")
+                .args(&["-p", &pid.to_string(), "-o", "args="])
+                .output()
+                .ok()?;
+
+            let cmdline = String::from_utf8_lossy(&output.stdout);
+            Some(
+                cmdline
+                    .trim()
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect(),
+            )
+        }
+    }
+
+    /// Windows process command line retrieval
+    #[cfg(target_os = "windows")]
+    fn get_process_cmdline(&self, pid: u32) -> Option<Vec<String>> {
+        let output = std::process::Command::new("wmic")
+            .args(&[
+                "process",
+                "where",
+                &format!("ProcessId={}", pid),
+                "get",
+                "CommandLine",
+                "/value",
+            ])
+            .output()
+            .ok()?;
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        for line in output_str.lines() {
+            if line.starts_with("CommandLine=") {
+                let cmdline = line.trim_start_matches("CommandLine=");
+                return Some(shell_words::split(cmdline).unwrap_or_default());
+            }
+        }
+
+        None
+    }
+
+    /// Extract project path from command line arguments
+    fn extract_project_from_cmdline(&self, cmdline: &[String]) -> Option<String> {
+        if cmdline.is_empty() {
+            return None;
+        }
+
+        // Look for project directory argument
+        // JetBrains IDEs often launched with: goland /path/to/project
+        for arg in cmdline.iter().skip(1) { // Skip executable name
+            if !arg.starts_with('-') && Path::new(arg).is_dir() {
+                return Some(arg.clone());
+            }
+        }
+
+        None
+    }
+
+    /// Try to find recently opened files in JetBrains workspace
+    fn get_jetbrains_recent_files(&self, project_path: &str) -> Result<Vec<FileInfo>, std::io::Error> {
+        let mut files = Vec::new();
+        
+        // JetBrains stores recent files information in .idea directory
+        let idea_dir = Path::new(project_path).join(".idea");
+        if !idea_dir.exists() {
+            return Ok(files);
+        }
+
+        // Try to find workspace.xml which contains recent file info
+        let workspace_file = idea_dir.join("workspace.xml");
+        if workspace_file.exists() {
+            if let Ok(content) = fs::read_to_string(&workspace_file) {
+                // Simple regex to find file paths in XML
+                if let Ok(regex) = Regex::new(r#"file://\$PROJECT_DIR\$([^"]+)"#) {
+                    for cap in regex.captures_iter(&content) {
+                        if let Some(path_match) = cap.get(1) {
+                            let relative_path = path_match.as_str();
+                            let full_path = format!("{}{}", project_path, relative_path);
+                            
+                            if Path::new(&full_path).exists() {
+                                let file_name = Path::new(relative_path)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(relative_path)
+                                    .to_string();
+
+                                files.push(FileInfo {
+                                    path: full_path,
+                                    name: file_name,
+                                    is_active: false,
+                                    is_modified: false,
+                                    tab_index: None,
+                                    project_name: None,
+                                });
+
+                                if files.len() >= 10 { // Limit number of files
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(files)
     }
 }
 
@@ -90,19 +251,47 @@ impl IDEDetector for JetBrainsDetector {
         let ide_version = None;
 
         for process in processes {
-            if let Some(file_info) = self.parse_jetbrains_window_title(&process.window_title) {
+            // Try to extract info from window title
+            if let Some((file_info, extracted_project_path)) = self.parse_jetbrains_window_title(&process.window_title) {
                 if file_info.is_active {
                     active_file = Some(file_info.path.clone());
                 }
 
-                // Try to extract project path from window title
-                if project_path.is_none() && file_info.project_name.is_some() {
-                    // This could be further parsed from window title
-                    project_path = Some("/extracted/project/path".to_string());
+                if let Some(path) = extracted_project_path {
+                    project_path = Some(path);
                 }
 
                 open_files.push(file_info);
             }
+
+            // Also try to extract project path from command line
+            if project_path.is_none() {
+                if let Some(cmdline) = self.get_process_cmdline(process.pid) {
+                    if let Some(cmd_project_path) = self.extract_project_from_cmdline(&cmdline) {
+                        project_path = Some(cmd_project_path);
+                    }
+                }
+            }
+        }
+
+        // If we found a project path, try to get recently opened files
+        if let Some(ref proj_path) = project_path {
+            if open_files.is_empty() || open_files.len() == 1 {
+                if let Ok(recent_files) = self.get_jetbrains_recent_files(proj_path) {
+                    for recent_file in recent_files {
+                        // Avoid duplicates
+                        if !open_files.iter().any(|f| f.path == recent_file.path) {
+                            open_files.push(recent_file);
+                        }
+                    }
+                }
+            }
+        }
+
+        if open_files.is_empty() {
+            return Err(crate::detector::DetectionError::WindowParseError {
+                message: format!("No files detected for {}", self.display_name()),
+            });
         }
 
         Ok(crate::types::DetectionResult {
