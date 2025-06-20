@@ -101,6 +101,9 @@ fn find_processes_linux() -> DetectionResult<Vec<ProcessInfo>> {
     use std::path::Path;
 
     let mut processes = Vec::new();
+    
+    // Get window titles from X11
+    let window_titles = get_x11_window_titles();
 
     // Read all entries in /proc
     let proc_dir = Path::new("/proc");
@@ -122,12 +125,16 @@ fn find_processes_linux() -> DetectionResult<Vec<ProcessInfo>> {
                     if let Ok(comm) = fs::read_to_string(&comm_path) {
                         let name = comm.trim().to_string();
 
-                        // Get command line for window title (simplified)
-                        let window_title = fs::read_to_string(&cmdline_path)
-                            .unwrap_or_default()
-                            .replace('\0', " ")
-                            .trim()
-                            .to_string();
+                        // Get window title from X11 if available, otherwise use cmdline
+                        let window_title = window_titles.get(&pid)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                fs::read_to_string(&cmdline_path)
+                                    .unwrap_or_default()
+                                    .replace('\0', " ")
+                                    .trim()
+                                    .to_string()
+                            });
 
                         let executable_path = fs::read_link(path.join("exe"))
                             .ok()
@@ -147,6 +154,120 @@ fn find_processes_linux() -> DetectionResult<Vec<ProcessInfo>> {
     }
 
     Ok(processes)
+}
+
+#[cfg(target_os = "linux")]
+fn get_x11_window_titles() -> std::collections::HashMap<u32, String> {
+    use std::collections::HashMap;
+    use x11::xlib::*;
+    use std::ffi::CString;
+    use std::ffi::CStr;
+    use std::ptr;
+    
+    let mut window_titles = HashMap::new();
+    
+    unsafe {
+        let display = XOpenDisplay(ptr::null());
+        if display.is_null() {
+            return window_titles;
+        }
+        
+        let root = XDefaultRootWindow(display);
+        let mut root_return = 0;
+        let mut parent = 0;
+        let mut children: *mut Window = ptr::null_mut();
+        let mut nchildren = 0;
+        
+        if XQueryTree(display, root, &mut root_return, &mut parent, &mut children, &mut nchildren) != 0 {
+            for i in 0..nchildren {
+                let window = *children.offset(i as isize);
+                
+                // Get window PID
+                let atom_name = CString::new("_NET_WM_PID").unwrap();
+                let atom = XInternAtom(display, atom_name.as_ptr(), 0);
+                
+                let mut actual_type = 0;
+                let mut actual_format = 0;
+                let mut nitems = 0;
+                let mut bytes_after = 0;
+                let mut prop: *mut u8 = ptr::null_mut();
+                
+                if XGetWindowProperty(
+                    display,
+                    window,
+                    atom,
+                    0,
+                    1,
+                    0,
+                    AnyPropertyType as u64,
+                    &mut actual_type,
+                    &mut actual_format,
+                    &mut nitems,
+                    &mut bytes_after,
+                    &mut prop
+                ) == Success as i32 && !prop.is_null() {
+                    let pid = *(prop as *const u32);
+                    
+                    // Get window name - try both WM_NAME and _NET_WM_NAME
+                    let mut window_name: *mut i8 = ptr::null_mut();
+                    let mut got_title = false;
+                    
+                    // First try _NET_WM_NAME (UTF-8)
+                    let net_wm_name = CString::new("_NET_WM_NAME").unwrap();
+                    let net_wm_name_atom = XInternAtom(display, net_wm_name.as_ptr(), 0);
+                    let utf8_string = CString::new("UTF8_STRING").unwrap();
+                    let utf8_atom = XInternAtom(display, utf8_string.as_ptr(), 0);
+                    
+                    let mut prop_name: *mut u8 = ptr::null_mut();
+                    let mut actual_type_name = 0;
+                    let mut actual_format_name = 0;
+                    let mut nitems_name = 0;
+                    let mut bytes_after_name = 0;
+                    
+                    if XGetWindowProperty(
+                        display,
+                        window,
+                        net_wm_name_atom,
+                        0,
+                        8192,
+                        0,
+                        utf8_atom,
+                        &mut actual_type_name,
+                        &mut actual_format_name,
+                        &mut nitems_name,
+                        &mut bytes_after_name,
+                        &mut prop_name
+                    ) == Success as i32 && !prop_name.is_null() && nitems_name > 0 {
+                        let title = String::from_utf8_lossy(std::slice::from_raw_parts(prop_name, nitems_name as usize)).to_string();
+                        if !title.is_empty() {
+                            window_titles.insert(pid, title);
+                            got_title = true;
+                        }
+                        XFree(prop_name as *mut _);
+                    }
+                    
+                    // Fall back to WM_NAME if needed
+                    if !got_title && XFetchName(display, window, &mut window_name) != 0 && !window_name.is_null() {
+                        let title = CStr::from_ptr(window_name).to_string_lossy().to_string();
+                        if !title.is_empty() {
+                            window_titles.insert(pid, title);
+                        }
+                        XFree(window_name as *mut _);
+                    }
+                    
+                    XFree(prop as *mut _);
+                }
+            }
+            
+            if !children.is_null() {
+                XFree(children as *mut _);
+            }
+        }
+        
+        XCloseDisplay(display);
+    }
+    
+    window_titles
 }
 
 pub fn find_processes_by_name(name: &str) -> DetectionResult<Vec<ProcessInfo>> {
