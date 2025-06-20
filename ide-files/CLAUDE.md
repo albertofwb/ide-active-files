@@ -89,11 +89,15 @@ pub struct DetectionResult {
 ## Current Implementation Status
 
 ### ✅ Completed Features
-- **Linux process detection** via `/proc` filesystem
+- **Linux process detection** via `/proc` filesystem with X11 window title integration
 - **JetBrains IDEs**: GoLand, PyCharm, IntelliJ IDEA, WebStorm, etc.
-  - Window title parsing with regex patterns
+  - Window title parsing with regex patterns for modern IDE formats
   - Command line argument extraction
-  - `.idea/workspace.xml` integration for recent files
+  - **Multi-tab detection**: Full `.idea/workspace.xml` parsing for all open tabs
+  - **Smart workspace file detection**: Prioritizes newest workspace files
+  - **Real-time tab tracking**: Detects active/inactive tabs and closed files
+  - **Intelligent project path resolution**: Searches common project directories
+  - **Mixed detection strategy**: Combines window title + workspace file analysis
 - **Terminal Editors**: Vim, Nano detection
 - **VSCode**: Basic process detection and workspace parsing
 - **CLI Interface**: Multiple output formats (JSON, plain, paths)
@@ -101,6 +105,7 @@ pub struct DetectionResult {
 - **Build System**: Comprehensive Makefile with 20+ targets
 
 ### 🚧 In Progress / Next Steps
+- **VSCode Multi-Tab Detection**: Apply JetBrains-style workspace parsing to VSCode
 - **Enhanced Terminal Detection**: Neovim server/client, Emacs daemon
 - **Container Support**: Docker IDE detection, VS Code remote server
 - **Real-time Monitoring**: File system watchers, polling mode
@@ -351,8 +356,56 @@ idf --ide=vim --verbose   # Debug specific IDE
 - **Testing**: Automated scripts + manual IDE testing
 - **Installation**: System-wide with auto-completion
 
+## Recent Progress (2025-06-20)
+
+### JetBrains IDE Multi-Tab Detection Enhancement
+- **Problem Solved**: Previously only detected active file from window title
+- **Solution Implemented**: Full workspace.xml parsing for all open tabs
+- **Key Features Added**:
+  - Detects all open tabs with active/inactive status
+  - Handles modern PyCharm 2025.1 simplified window title format
+  - Smart workspace file prioritization by modification time
+  - Mixed detection strategy (workspace + window title)
+  - Real-time tab state tracking (handles closed tabs)
+
+### Technical Implementation Details
+```rust
+// Enhanced FileEditorManager parsing
+let regex = Regex::new(r#"<file[^>]*current-in-tab="([^"]*)"[^>]*>\s*<entry file="file://\$PROJECT_DIR\$([^"]+)""#);
+
+// Intelligent workspace file selection
+workspace_files.sort_by(|a, b| {
+    let a_time = a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+    let b_time = b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+    b_time.cmp(&a_time)
+});
+```
+
+### Verified Output Examples
+```json
+// Before: Only active file
+{
+  "active_file": "second.py",
+  "open_files": [{"path": "second.py", "is_active": true}]
+}
+
+// After: All open tabs
+{
+  "active_file": "/home/albert/codes/hello/second.py",
+  "open_files": [
+    {"path": "/home/albert/codes/hello/hello.py", "is_active": false},
+    {"path": "/home/albert/codes/hello/second.py", "is_active": true}
+  ]
+}
+```
+
+### Next Steps
+1. **VSCode Enhancement**: Apply similar multi-tab detection strategy
+2. **Terminal Editors**: Expand Neovim support with LSP integration
+3. **Performance**: Add caching for frequently accessed workspace files
+
 ---
 
-*Last updated: 2025-06-19*
+*Last updated: 2025-06-20*
 *Environment: Linux terminal, no desktop GUI*
-*Status: Phase 1 complete, Linux command-line optimizations in progress*
+*Status: JetBrains multi-tab detection complete, VSCode enhancement next*

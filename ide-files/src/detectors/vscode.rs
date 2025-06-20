@@ -1,5 +1,8 @@
 use crate::detector::{DetectionResult, IDEDetector};
 use crate::types::{FileInfo, ProcessInfo, SupportedIDE};
+use rusqlite::{Connection, Result as SqliteResult};
+use serde_json::Value;
+use std::env;
 use std::fs;
 use std::path::Path;
 
@@ -142,12 +145,8 @@ impl VSCodeDetector {
             i += 1;
         }
 
-        // If we found a workspace, try to find recently opened files
-        if let Some(ref workspace) = workspace_path {
-            if let Ok(recent_files) = self.get_vscode_recent_files(workspace) {
-                files.extend(recent_files);
-            }
-        }
+        // Don't add VSCode session files here since they'll be added in extract_files
+        // This avoids duplicate file detection
 
         // If we have workspace or files, return them
         if workspace_path.is_some() || !files.is_empty() {
@@ -166,22 +165,181 @@ impl VSCodeDetector {
         }
     }
 
-    /// Try to get recently opened files from VSCode workspace state
+    /// Try to get opened files from VSCode workspace state database
     fn get_vscode_recent_files(&self, workspace_path: &str) -> Result<Vec<FileInfo>, std::io::Error> {
-        let mut files = Vec::new();
-        
-        // Check .vscode/settings.json for any file references
-        let vscode_dir = Path::new(workspace_path).join(".vscode");
-        if vscode_dir.exists() {
-            // Look for settings that might contain file references
-            let settings_file = vscode_dir.join("settings.json");
-            if settings_file.exists() {
-                // For now, just mark the workspace as having unknown open files
-                // In a full implementation, we'd parse the settings.json
-                // and potentially use VSCode's API or extension
+        // First try to get files from VSCode workspace database
+        if let Ok(files) = self.get_vscode_session_files(workspace_path) {
+            if !files.is_empty() {
+                return Ok(files);
             }
         }
 
+        // Fallback to heuristic method
+        self.get_vscode_files_heuristic(workspace_path)
+    }
+
+    /// Get VSCode session files from SQLite database
+    fn get_vscode_session_files(&self, workspace_path: &str) -> Result<Vec<FileInfo>, std::io::Error> {
+        let home_dir = env::var("HOME").map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
+        
+        // Find VSCode workspace storage directory
+        let workspace_storage_dir = format!("{}/.config/Code/User/workspaceStorage", home_dir);
+        
+        // Try to find workspace ID, but if not found, try all workspace directories
+        if let Ok(workspace_id) = self.get_workspace_id(workspace_path, &workspace_storage_dir) {
+            let db_path = format!("{}/{}/state.vscdb", workspace_storage_dir, workspace_id);
+            if Path::new(&db_path).exists() {
+                return self.parse_vscode_database(&db_path);
+            }
+        }
+        
+        // Fallback: try all workspace directories (for non-workspace VSCode sessions)
+        self.scan_all_vscode_sessions(&workspace_storage_dir)
+    }
+
+    /// Scan all VSCode workspace directories for editor sessions
+    fn scan_all_vscode_sessions(&self, storage_dir: &str) -> Result<Vec<FileInfo>, std::io::Error> {
+        if let Ok(entries) = fs::read_dir(storage_dir) {
+            // Get the most recently modified workspace (likely the active one)
+            let mut workspace_dirs: Vec<_> = entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().is_dir())
+                .collect();
+                
+            // Sort by modification time (newest first)
+            workspace_dirs.sort_by(|a, b| {
+                let a_time = a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                let b_time = b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                b_time.cmp(&a_time)
+            });
+            
+            // Try the most recent workspace (only the first one with files)
+            for workspace_dir in workspace_dirs.into_iter().take(1) { // Only try the most recent
+                let db_path = workspace_dir.path().join("state.vscdb");
+                if db_path.exists() {
+                    if let Ok(files) = self.parse_vscode_database(&db_path.to_string_lossy()) {
+                        if !files.is_empty() {
+                            return Ok(files);
+                        }
+                    }
+                }
+            }
+        }
+        
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No active VSCode sessions found"))
+    }
+
+    /// Find workspace ID from VSCode storage directory
+    fn get_workspace_id(&self, workspace_path: &str, storage_dir: &str) -> Result<String, std::io::Error> {
+        let workspace_uri = format!("file://{}", workspace_path);
+        
+        // Look through workspace storage directories to find matching workspace
+        if let Ok(entries) = fs::read_dir(storage_dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let workspace_dir = entry.path();
+                    if workspace_dir.is_dir() {
+                        // Check workspace.json for matching URI
+                        let workspace_json = workspace_dir.join("workspace.json");
+                        if workspace_json.exists() {
+                            if let Ok(content) = fs::read_to_string(&workspace_json) {
+                                if content.contains(&workspace_uri) {
+                                    if let Some(dir_name) = workspace_dir.file_name() {
+                                        if let Some(name_str) = dir_name.to_str() {
+                                            return Ok(name_str.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "VSCode workspace ID not found"))
+    }
+
+    /// Parse VSCode SQLite database for editor state
+    fn parse_vscode_database(&self, db_path: &str) -> Result<Vec<FileInfo>, std::io::Error> {
+        let conn = Connection::open(db_path)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        let mut stmt = conn.prepare("SELECT value FROM ItemTable WHERE key = 'memento/workbench.parts.editor'")
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        let rows: SqliteResult<Vec<String>> = stmt.query_map([], |row| {
+            Ok(row.get(0)?)
+        }).and_then(|mapped_rows| mapped_rows.collect());
+
+        match rows {
+            Ok(values) if !values.is_empty() => {
+                let editor_state: Value = serde_json::from_str(&values[0])
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                
+                self.parse_editor_state(editor_state)
+            }
+            _ => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No editor state found in database"))
+        }
+    }
+
+    /// Parse VSCode editor state JSON to extract open files
+    fn parse_editor_state(&self, editor_state: Value) -> Result<Vec<FileInfo>, std::io::Error> {
+        let mut files = Vec::new();
+        
+        // Navigate through the JSON structure
+        if let Some(editorpart) = editor_state.get("editorpart.state") {
+            if let Some(serialized_grid) = editorpart.get("serializedGrid") {
+                if let Some(root) = serialized_grid.get("root") {
+                    if let Some(data) = root.get("data") {
+                        if let Some(data_array) = data.as_array() {
+                            for group in data_array {
+                                if let Some(group_data) = group.get("data") {
+                                    if let Some(editors) = group_data.get("editors") {
+                                        if let Some(mru) = group_data.get("mru") {
+                                            files.extend(self.parse_editor_group(editors, mru)?);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(files)
+    }
+
+    /// Parse individual editor group
+    fn parse_editor_group(&self, editors: &Value, mru: &Value) -> Result<Vec<FileInfo>, std::io::Error> {
+        let mut files = Vec::new();
+        
+        if let (Some(editors_array), Some(mru_array)) = (editors.as_array(), mru.as_array()) {
+            // Get active file index (first in MRU order)
+            let active_index = mru_array.get(0).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            
+            for (index, editor) in editors_array.iter().enumerate() {
+                if let Some(value_str) = editor.get("value").and_then(|v| v.as_str()) {
+                    if let Ok(editor_data) = serde_json::from_str::<Value>(value_str) {
+                        if let Some(resource) = editor_data.get("resourceJSON") {
+                            if let Some(fs_path) = resource.get("fsPath").and_then(|v| v.as_str()) {
+                                let is_active = index == active_index;
+                                files.push(self.create_file_info(fs_path, is_active));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(files)
+    }
+
+    /// Fallback heuristic method for getting workspace files
+    fn get_vscode_files_heuristic(&self, workspace_path: &str) -> Result<Vec<FileInfo>, std::io::Error> {
+        let mut files = Vec::new();
+        
         // Try to find common file types in the workspace (simplified heuristic)
         if let Ok(entries) = fs::read_dir(workspace_path) {
             let mut found_files = 0;
@@ -268,7 +426,22 @@ impl IDEDetector for VSCodeDetector {
             }
         }
 
-        if all_files.is_empty() && project_path.is_none() {
+        // Try to find files even without workspace path
+        if all_files.is_empty() {
+            if let Ok(session_files) = self.get_vscode_recent_files("") {
+                for session_file in session_files {
+                    // Avoid duplicates
+                    if !all_files.iter().any(|f| f.path == session_file.path) {
+                        if session_file.is_active && active_file.is_none() {
+                            active_file = Some(session_file.path.clone());
+                        }
+                        all_files.push(session_file);
+                    }
+                }
+            }
+        }
+
+        if all_files.is_empty() {
             return Err(crate::detector::DetectionError::WindowParseError {
                 message: "No workspace or files detected for VSCode".to_string(),
             });
