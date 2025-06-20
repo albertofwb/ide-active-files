@@ -289,45 +289,93 @@ impl JetBrainsDetector {
         Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Project not found"))
     }
 
-    /// Try to find recently opened files in JetBrains workspace
+    /// Try to find opened files in JetBrains workspace
     fn get_jetbrains_recent_files(&self, project_path: &str) -> Result<Vec<FileInfo>, std::io::Error> {
         let mut files = Vec::new();
         
-        // JetBrains stores recent files information in .idea directory
+        // JetBrains stores file information in .idea directory
         let idea_dir = Path::new(project_path).join(".idea");
         if !idea_dir.exists() {
             return Ok(files);
         }
 
-        // Try to find workspace.xml which contains recent file info
-        let workspace_file = idea_dir.join("workspace.xml");
-        if workspace_file.exists() {
-            if let Ok(content) = fs::read_to_string(&workspace_file) {
-                // Simple regex to find file paths in XML
-                if let Ok(regex) = Regex::new(r#"file://\$PROJECT_DIR\$([^"]+)"#) {
-                    for cap in regex.captures_iter(&content) {
-                        if let Some(path_match) = cap.get(1) {
-                            let relative_path = path_match.as_str();
-                            let full_path = format!("{}{}", project_path, relative_path);
+        // Try both workspace.xml and workspace_with_tabs.xml
+        let workspace_files = vec![
+            idea_dir.join("workspace.xml"),
+            idea_dir.join("workspace_with_tabs.xml"),
+        ];
+
+        for workspace_file in workspace_files {
+            if workspace_file.exists() {
+                if let Ok(content) = fs::read_to_string(&workspace_file) {
+                    // Parse FileEditorManager component for open tabs
+                    if let Some(editor_manager_start) = content.find("<component name=\"FileEditorManager\">") {
+                        if let Some(editor_manager_end) = content[editor_manager_start..].find("</component>") {
+                            let editor_section = &content[editor_manager_start..editor_manager_start + editor_manager_end];
                             
-                            if Path::new(&full_path).exists() {
-                                let file_name = Path::new(relative_path)
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or(relative_path)
-                                    .to_string();
+                            // Regex to find file entries with tab status
+                            if let Ok(regex) = Regex::new(r#"<file[^>]*current-in-tab="([^"]*)"[^>]*>\s*<entry file="file://\$PROJECT_DIR\$([^"]+)""#) {
+                                for cap in regex.captures_iter(editor_section) {
+                                    if let (Some(is_current), Some(path_match)) = (cap.get(1), cap.get(2)) {
+                                        let relative_path = path_match.as_str();
+                                        let full_path = format!("{}{}", project_path, relative_path);
+                                        let is_active = is_current.as_str() == "true";
+                                        
+                                        if Path::new(&full_path).exists() {
+                                            let file_name = Path::new(relative_path)
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or(relative_path)
+                                                .to_string();
 
-                                files.push(FileInfo {
-                                    path: full_path,
-                                    name: file_name,
-                                    is_active: false,
-                                    is_modified: false,
-                                    tab_index: None,
-                                    project_name: None,
-                                });
+                                            files.push(FileInfo {
+                                                path: full_path,
+                                                name: file_name,
+                                                is_active,
+                                                is_modified: false,
+                                                tab_index: None,
+                                                project_name: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // If we found files in this workspace file, return early
+                            if !files.is_empty() {
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Fallback: Simple regex to find file paths in XML (for older formats)
+                    if files.is_empty() {
+                        if let Ok(regex) = Regex::new(r#"file://\$PROJECT_DIR\$([^"]+)"#) {
+                            for cap in regex.captures_iter(&content) {
+                                if let Some(path_match) = cap.get(1) {
+                                    let relative_path = path_match.as_str();
+                                    let full_path = format!("{}{}", project_path, relative_path);
+                                    
+                                    if Path::new(&full_path).exists() {
+                                        let file_name = Path::new(relative_path)
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or(relative_path)
+                                            .to_string();
 
-                                if files.len() >= 10 { // Limit number of files
-                                    break;
+                                        files.push(FileInfo {
+                                            path: full_path,
+                                            name: file_name,
+                                            is_active: false,
+                                            is_modified: false,
+                                            tab_index: None,
+                                            project_name: None,
+                                        });
+
+                                        if files.len() >= 10 { // Limit number of files
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -384,14 +432,28 @@ impl IDEDetector for JetBrainsDetector {
             }
         }
 
-        // If we found a project path, try to get recently opened files
+        // If we found a project path, try to get opened files from workspace
         if let Some(ref proj_path) = project_path {
-            if open_files.is_empty() || open_files.len() == 1 {
-                if let Ok(recent_files) = self.get_jetbrains_recent_files(proj_path) {
-                    for recent_file in recent_files {
-                        // Avoid duplicates
-                        if !open_files.iter().any(|f| f.path == recent_file.path) {
-                            open_files.push(recent_file);
+            if let Ok(workspace_files) = self.get_jetbrains_recent_files(proj_path) {
+                if !workspace_files.is_empty() {
+                    // Replace window title detection with workspace file info
+                    open_files.clear();
+                    active_file = None;
+                    
+                    for workspace_file in workspace_files {
+                        if workspace_file.is_active {
+                            active_file = Some(workspace_file.path.clone());
+                        }
+                        open_files.push(workspace_file);
+                    }
+                } else if open_files.is_empty() || open_files.len() == 1 {
+                    // Fallback to old behavior for older IDE versions
+                    if let Ok(recent_files) = self.get_jetbrains_recent_files(proj_path) {
+                        for recent_file in recent_files {
+                            // Avoid duplicates
+                            if !open_files.iter().any(|f| f.path == recent_file.path) {
+                                open_files.push(recent_file);
+                            }
                         }
                     }
                 }
