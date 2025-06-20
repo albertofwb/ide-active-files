@@ -96,10 +96,12 @@ impl VSCodeDetector {
         
         // Parse VSCode command line arguments
         // Common formats:
-        // code /path/to/workspace
-        // code /path/to/file1.txt /path/to/file2.txt
-        // code --folder-uri file:///path/to/workspace
-        // code --file-uri file:///path/to/file.txt
+        // 1. Folder/Workspace mode:
+        //    code /path/to/workspace
+        //    code --folder-uri file:///path/to/workspace
+        // 2. Direct file mode:
+        //    code /path/to/file1.txt /path/to/file2.txt
+        //    code --file-uri file:///path/to/file.txt
 
         let mut i = 1; // Skip executable name
         while i < cmdline.len() {
@@ -135,6 +137,16 @@ impl VSCodeDetector {
                     arg.clone()
                 };
 
+                // Skip VS Code extension and internal files
+                if path.contains("/.vscode/extensions/") || 
+                   path.contains("/resources/app/extensions/") ||
+                   path.contains("/CachedExtension") ||
+                   path.contains("node_modules") ||
+                   path.ends_with(".js") && (path.contains("server") || path.contains("bundle")) {
+                    i += 1;
+                    continue;
+                }
+
                 if Path::new(&path).is_dir() {
                     workspace_path = Some(path);
                 } else if Path::new(&path).exists() {
@@ -166,20 +178,20 @@ impl VSCodeDetector {
     }
 
     /// Try to get opened files from VSCode workspace state database
-    fn get_vscode_recent_files(&self, workspace_path: &str) -> Result<Vec<FileInfo>, std::io::Error> {
+    fn get_vscode_recent_files(&self, workspace_path: &str) -> Result<(Vec<FileInfo>, Option<String>), std::io::Error> {
         // First try to get files from VSCode workspace database
-        if let Ok(files) = self.get_vscode_session_files(workspace_path) {
+        if let Ok((files, detected_workspace)) = self.get_vscode_session_files(workspace_path) {
             if !files.is_empty() {
-                return Ok(files);
+                return Ok((files, detected_workspace));
             }
         }
 
         // Fallback to heuristic method
-        self.get_vscode_files_heuristic(workspace_path)
+        self.get_vscode_files_heuristic(workspace_path).map(|files| (files, None))
     }
 
     /// Get VSCode session files from SQLite database
-    fn get_vscode_session_files(&self, workspace_path: &str) -> Result<Vec<FileInfo>, std::io::Error> {
+    fn get_vscode_session_files(&self, workspace_path: &str) -> Result<(Vec<FileInfo>, Option<String>), std::io::Error> {
         let home_dir = env::var("HOME").map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
         
         // Find VSCode workspace storage directory
@@ -188,8 +200,12 @@ impl VSCodeDetector {
         // Try to find workspace ID, but if not found, try all workspace directories
         if let Ok(workspace_id) = self.get_workspace_id(workspace_path, &workspace_storage_dir) {
             let db_path = format!("{}/{}/state.vscdb", workspace_storage_dir, workspace_id);
+            let workspace_json_path = format!("{}/{}/workspace.json", workspace_storage_dir, workspace_id);
+            
             if Path::new(&db_path).exists() {
-                return self.parse_vscode_database(&db_path);
+                let files = self.parse_vscode_database(&db_path)?;
+                let detected_workspace = self.extract_workspace_from_json(&workspace_json_path);
+                return Ok((files, detected_workspace));
             }
         }
         
@@ -197,8 +213,21 @@ impl VSCodeDetector {
         self.scan_all_vscode_sessions(&workspace_storage_dir)
     }
 
+    /// Extract workspace path from workspace.json
+    fn extract_workspace_from_json(&self, json_path: &str) -> Option<String> {
+        if let Ok(content) = fs::read_to_string(json_path) {
+            if let Ok(json) = serde_json::from_str::<Value>(&content) {
+                if let Some(folder) = json.get("folder").and_then(|v| v.as_str()) {
+                    // Remove file:// prefix if present
+                    return Some(folder.strip_prefix("file://").unwrap_or(folder).to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// Scan all VSCode workspace directories for editor sessions
-    fn scan_all_vscode_sessions(&self, storage_dir: &str) -> Result<Vec<FileInfo>, std::io::Error> {
+    fn scan_all_vscode_sessions(&self, storage_dir: &str) -> Result<(Vec<FileInfo>, Option<String>), std::io::Error> {
         if let Ok(entries) = fs::read_dir(storage_dir) {
             // Get the most recently modified workspace (likely the active one)
             let mut workspace_dirs: Vec<_> = entries
@@ -213,13 +242,16 @@ impl VSCodeDetector {
                 b_time.cmp(&a_time)
             });
             
-            // Try the most recent workspace (only the first one with files)
-            for workspace_dir in workspace_dirs.into_iter().take(1) { // Only try the most recent
+            // Try the most recent workspaces
+            for workspace_dir in workspace_dirs.into_iter().take(2) { // Try top 2 recent workspaces
                 let db_path = workspace_dir.path().join("state.vscdb");
+                let workspace_json_path = workspace_dir.path().join("workspace.json");
+                
                 if db_path.exists() {
                     if let Ok(files) = self.parse_vscode_database(&db_path.to_string_lossy()) {
                         if !files.is_empty() {
-                            return Ok(files);
+                            let detected_workspace = self.extract_workspace_from_json(&workspace_json_path.to_string_lossy());
+                            return Ok((files, detected_workspace));
                         }
                     }
                 }
@@ -263,10 +295,14 @@ impl VSCodeDetector {
     /// Parse VSCode SQLite database for editor state
     fn parse_vscode_database(&self, db_path: &str) -> Result<Vec<FileInfo>, std::io::Error> {
         let conn = Connection::open(db_path)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::Other, e)
+            })?;
 
         let mut stmt = conn.prepare("SELECT value FROM ItemTable WHERE key = 'memento/workbench.parts.editor'")
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::Other, e)
+            })?;
 
         let rows: SqliteResult<Vec<String>> = stmt.query_map([], |row| {
             Ok(row.get(0)?)
@@ -408,27 +444,39 @@ impl IDEDetector for VSCodeDetector {
         let mut all_files = Vec::new();
         let mut active_file = None;
         let mut project_path = None;
+        let mut found_cmdline_files = false;
 
+        // First, check command line arguments for workspace/files
         for process in processes {
             if let Some(cmdline) = self.get_process_cmdline(process.pid) {
                 if let Some((workspace, files)) = self.extract_vscode_info(&cmdline) {
                     if !workspace.is_empty() && project_path.is_none() {
-                        project_path = Some(workspace);
+                        project_path = Some(workspace.clone());
                     }
                     
-                    for file in files {
-                        if file.is_active && active_file.is_none() {
-                            active_file = Some(file.path.clone());
+                    // If files were passed directly via command line
+                    if !files.is_empty() {
+                        found_cmdline_files = true;
+                        for file in files {
+                            if file.is_active && active_file.is_none() {
+                                active_file = Some(file.path.clone());
+                            }
+                            all_files.push(file);
                         }
-                        all_files.push(file);
                     }
                 }
             }
         }
 
-        // Try to find files even without workspace path
-        if all_files.is_empty() {
-            if let Ok(session_files) = self.get_vscode_recent_files("") {
+        // If VSCode opened a folder (no files in cmdline), get files from session database
+        // Also try session database if no cmdline files were found
+        if !found_cmdline_files {
+            if let Ok((session_files, detected_workspace)) = self.get_vscode_recent_files(project_path.as_deref().unwrap_or("")) {
+                // Update project path if detected from workspace.json
+                if project_path.is_none() && detected_workspace.is_some() {
+                    project_path = detected_workspace;
+                }
+                
                 for session_file in session_files {
                     // Avoid duplicates
                     if !all_files.iter().any(|f| f.path == session_file.path) {
