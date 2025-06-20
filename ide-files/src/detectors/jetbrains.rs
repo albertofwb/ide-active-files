@@ -299,11 +299,18 @@ impl JetBrainsDetector {
             return Ok(files);
         }
 
-        // Try both workspace.xml and workspace_with_tabs.xml
-        let workspace_files = vec![
+        // Try both workspace.xml and workspace_with_tabs.xml, sorted by modification time
+        let mut workspace_files = vec![
             idea_dir.join("workspace.xml"),
             idea_dir.join("workspace_with_tabs.xml"),
         ];
+        
+        // Sort by modification time (newest first)
+        workspace_files.sort_by(|a, b| {
+            let a_time = a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            let b_time = b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            b_time.cmp(&a_time)
+        });
 
         for workspace_file in workspace_files {
             if workspace_file.exists() {
@@ -436,15 +443,34 @@ impl IDEDetector for JetBrainsDetector {
         if let Some(ref proj_path) = project_path {
             if let Ok(workspace_files) = self.get_jetbrains_recent_files(proj_path) {
                 if !workspace_files.is_empty() {
-                    // Replace window title detection with workspace file info
-                    open_files.clear();
-                    active_file = None;
+                    // Check if window title detection found an active file that's not in workspace
+                    // This suggests workspace file might be outdated
+                    let window_active_found = open_files.iter().any(|f| f.is_active);
+                    let workspace_has_different_active = workspace_files.iter()
+                        .find(|f| f.is_active)
+                        .map(|f| &f.path) != active_file.as_ref();
                     
-                    for workspace_file in workspace_files {
-                        if workspace_file.is_active {
-                            active_file = Some(workspace_file.path.clone());
+                    // If window title shows different active file, prefer window title detection
+                    if window_active_found && workspace_has_different_active {
+                        // Keep window title results, just supplement with workspace files that aren't duplicates
+                        for workspace_file in workspace_files {
+                            if !open_files.iter().any(|f| f.path == workspace_file.path) {
+                                let mut supplemented_file = workspace_file;
+                                supplemented_file.is_active = false; // Window title takes precedence for active status
+                                open_files.push(supplemented_file);
+                            }
                         }
-                        open_files.push(workspace_file);
+                    } else {
+                        // Replace window title detection with workspace file info
+                        open_files.clear();
+                        active_file = None;
+                        
+                        for workspace_file in workspace_files {
+                            if workspace_file.is_active {
+                                active_file = Some(workspace_file.path.clone());
+                            }
+                            open_files.push(workspace_file);
+                        }
                     }
                 } else if open_files.is_empty() || open_files.len() == 1 {
                     // Fallback to old behavior for older IDE versions
